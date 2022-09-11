@@ -1,0 +1,9 @@
+hydra-core
+transformers
+datasets
+accelerate
+wandb
+sentencepiece
+scikit-learn>=1.1.0
+kaggle
+bitsandbytes
