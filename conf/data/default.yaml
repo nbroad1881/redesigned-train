@@ -7,13 +7,23 @@ pad_multiple: 8
 n_rows: -1  
 kfolds: 5
 
-text_col: "text"
+text_col: "full_text"
 text_pair_col: null
-label_col: "label"
+label_col:
+  - 'cohesion'
+  - 'syntax'
+  - 'vocabulary'
+  - 'phraseology'
+  - 'grammar'
+  - 'conventions'
+  
 problem_type: "multi_label_classification"
 is_regression: yes
 
 map_batch_size: 1000
 data_files:
   train: []
-  validation: []
+load_from_disk: null
+
+# if using masking augmentation
+masking_prob: 0.15
