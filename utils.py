@@ -198,3 +198,54 @@ class MaskAugmentationTrainer(Trainer):
         )
 
         return dataloader
+    
+    
+class SaveCallback(TrainerCallback):
+    def __init__(self, min_score_to_save, metric_name, weights_only=True) -> None:
+        """
+        After evaluation, if the `metric_name` value is higher than
+        `min_score_to_save` the model will get saved.
+        If `metric_name` value > `min_score_to_save`, then
+        `metric_name` value becomes the new `min_score_to_save`.
+        """
+        super().__init__()
+
+        self.min_score_to_save = min_score_to_save
+        self.metric_name = metric_name
+        self.weights_only = weights_only
+
+    def on_evaluate(
+        self,
+        args: TrainingArguments,
+        state: TrainerState,
+        control: TrainerControl,
+        **kwargs,
+    ):
+        """
+        Event called at the end of a training step. If using gradient accumulation, one training step might take
+        several inputs.
+        """
+        metrics = kwargs.get("metrics")
+        if metrics is None:
+            raise ValueError("No metrics found for SaveCallback")
+
+        metric_value = metrics.get(self.metric_name)
+        if metric_value is None:
+            raise KeyError(f"{self.metric_name} not found in metrics")
+
+        if metric_value > self.min_score_to_save:
+            logger.info(f"Saving model.")
+            self.min_score_to_save = metric_value
+            kwargs["model"].config.update({f"best_{self.metric_name}": metric_value})
+
+            if self.weights_only:
+                if "COCO" in str(kwargs["model"].config.__class__):
+                    torch.save(kwargs["model"].state_dict(), os.path.join(args.output_dir, "pytorch_model.bin"))
+                else:
+                    kwargs["model"].save_pretrained(args.output_dir)
+                kwargs["model"].config.save_pretrained(args.output_dir)
+                kwargs["tokenizer"].save_pretrained(args.output_dir)
+            else:
+                control.should_save = True
+        else:
+            logger.info("Not saving model.")
