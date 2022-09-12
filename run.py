@@ -16,7 +16,7 @@ from transformers.integrations import WandbCallback
 from transformers.utils.logging import get_logger
 
 from data import DataModule
-from utils import set_wandb_env_vars, compute_metrics, NewWandbCB, MaskAugmentationTrainer
+from utils import set_wandb_env_vars, compute_metrics, NewWandbCB, MaskAugmentationTrainer, SaveCallback
 from modeling.base import BaseModel
 
 logger = get_logger(__name__)
@@ -52,6 +52,18 @@ def main(cfg: DictConfig):
         "classifier_dropout_prob": cfg.model.classifier_dropout_prob,
         "loss_fn": cfg.model.loss_fn,
     })
+    
+    ### Set up callbacks ###
+    
+    callbacks = []
+    if "wandb" in t_args.report_to:
+        callbacks.append(NewWandbCB(cfg))
+    
+    callbacks.append(SaveCallback(
+        min_score_to_save=cfg.min_score_to_save, 
+        metric_name=t_args.metric_for_best_model, 
+        weights_only=True,
+    ))
 
     run_start = datetime.utcnow().strftime("%Y-%d-%m_%H-%M-%S")
 
@@ -83,7 +95,7 @@ def main(cfg: DictConfig):
             tokenizer=dm.tokenizer,
             data_collator=collator,
             compute_metrics=partial(compute_metrics, label2id=dm.label2id),
-            callbacks=[NewWandbCB(cfg)],
+            callbacks=callbacks,
         )
         
         trainer.remove_callback(WandbCallback)

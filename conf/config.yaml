@@ -3,7 +3,7 @@
 defaults:
   - data: default
   - training_args: default
-  - model: default
+  - model: base_transformer
   - wandb: default
   - _self_ # attributes in this file will override defaults
 
@@ -16,30 +16,32 @@ model:
   layer_norm_eps: 1e-7
   num_attention_heads: 12
   num_hidden_layers: 36
+  multisample_dropout: []
+  loss_fn: smoothl1 # smoothl1, l1, mse
 
   
 data:
   max_seq_length: 512
   pad_multiple: 8
-  stride: None
-  n_rows: 200
+  stride: null
+  n_rows: -1
   map_batch_size: 500 # batch size when using `datasets.map`
   dataset_name: null
   data_files:
     train:
       - 'train_folds.csv'
-    validation:
+  mask_augmentation: yes
   
-training_arguments:
+training_args:
   do_train: yes
   do_eval: yes
   
   evaluation_strategy: "epoch"
   fp16: yes
   
-  learning_rate: 7e-6
-  per_device_train_batch_size: 2
-  per_device_eval_batch_size: 16
+  learning_rate: 2e-5
+  per_device_train_batch_size: 4
+  per_device_eval_batch_size: 32
   gradient_accumulation_steps: 1
   
   metric_for_best_model: "eval_mcrmse"
@@ -47,11 +49,13 @@ training_arguments:
   report_to: "wandb"
   log_level: "warning"
   save_strategy: "epoch"
-  logging_steps: 10
+  logging_steps: 30
   save_total_limit: 2
+  group_by_length: yes
+  warmup_ratio: 0.1
   
 # general configuration
-num_proc: 2
+num_proc: 7
 task: text-classification
 language: en
 project_name: feedback-prize-3
