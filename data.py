@@ -31,24 +31,27 @@ class DataModule:
         If debugging, take small subset of the full dataset.
         """
 
-        if self.cfg.data.data_files.train is not None:
-            processor = LocalFileProcessor(
-                cfg=self.cfg,
-                tokenizer=self.tokenizer,
-            )
+        if self.cfg.data.load_from_disk:
+            pass
         else:
-            raise ValueError("Must specify local train file")
+            if self.cfg.data.data_files.train is not None:
+                processor = LocalFileProcessor(
+                    cfg=self.cfg,
+                    tokenizer=self.tokenizer,
+                )
+            else:
+                raise ValueError("Must specify local train file")
 
-        self.raw_dataset, self.tokenized_dataset = processor.prepare_dataset()
+            self.raw_dataset, self.tokenized_dataset = processor.prepare_dataset()
 
-        self.label2id = processor.get_label2id()
-        self.id2label = {i: l for l, i in self.label2id.items()}
+            self.label2id = processor.get_label2id()
+            self.id2label = {i: l for l, i in self.label2id.items()}
 
-        self.fold_idxs = []
+            self.fold_idxs = []
 
-        temp_df = self.raw_dataset["train"].to_pandas().reset_index(drop=True)
-        for k in range(self.cfg.data.kfolds):
-            self.fold_idxs.append(temp_df[temp_df["kfolds"]==k].index.tolist())
+            temp_df = self.raw_dataset["train"].to_pandas().reset_index(drop=True)
+            for k in range(self.cfg.data.kfolds):
+                self.fold_idxs.append(temp_df[temp_df["kfold"]==k].index.tolist())
 
 
     def get_train_dataset(self, fold: int) -> datasets.Dataset:
@@ -113,15 +116,14 @@ class LocalFileProcessor:
         return raw_dataset, tokenized_dataset
 
     def set_label2id(self, train_dataset: Dataset):
-
-        # multi-label
-        if isinstance(self.cfg.data.label_col, list):
-            labels = sorted(self.cfg.data.label_col)
-
-        # multi-class
-        else:
+        
+        if isinstance(self.cfg.data.label_col, str):
+            label_col = self.cfg.data.label_col
             labels = train_dataset.unique(self.cfg.data.label_col)
             labels = sorted(labels)
+        else:
+            label_cols = OmegaConf.to_container(self.cfg.data.label_col)
+            labels = sorted(label_cols)            
 
         self.label2id = {label: i for i, label in enumerate(labels)}
 
@@ -166,8 +168,9 @@ def tokenize(
         **tokenizer_kwargs,
     )
 
+    
     # multi-label
-    if isinstance(label_col, list):
+    if not isinstance(label_col, str):
         try:
             dtype = np.float32 if isinstance(examples[label_col[0]][0], float) else np.int32
         except TypeError:
@@ -183,6 +186,6 @@ def tokenize(
     else:
         labels = examples[label_col]
 
-    tokenized["labels"] = examples[label_col]
+    tokenized["labels"] = labels
 
     return tokenized
