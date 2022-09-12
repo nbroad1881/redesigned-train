@@ -38,7 +38,7 @@ else
     chmod 600 ~/.kaggle/kaggle.json
 
     mkdir data
-    kaggle kernels output abhishek/multi-label-stratified-folds -p data
+    kaggle kernels output abhishek/multi-label-stratified-folds -p .
 fi
 
 FILE="wandb.txt"
