@@ -12,11 +12,12 @@ from transformers import (
     AutoModelForSequenceClassification,
     DataCollatorWithPadding,
 )
+from transformers.integrations import WandbCallback
 from transformers.utils.logging import get_logger
 
 from data import DataModule
-from utils import set_wandb_env_vars, compute_metrics
-
+from utils import set_wandb_env_vars, compute_metrics, NewWandbCB, MaskAugmentationTrainer
+from modeling.base import BaseModel
 
 logger = get_logger(__name__)
 
@@ -38,13 +39,19 @@ def main(cfg: DictConfig):
 
     model_config = AutoConfig.from_pretrained(
         cfg.model.model_name_or_path,
-        problem_type=cfg.model.problem_type,
+        problem_type=cfg.data.problem_type,
         num_labels=len(dm.label2id),
         label2id=dm.label2id,
         id2label=dm.id2label,
         hidden_dropout_prob=cfg.model.hidden_dropout_prob,
-        attention_dropout_prob=cfg.attention_dropout_prob,
+        attention_probs_dropout_prob=cfg.model.attention_probs_dropout_prob,
     )
+    model_config.update({
+        "multisample_dropout": OmegaConf.to_container(cfg.model.multisample_dropout),
+        "output_layer_norm": cfg.model.output_layer_norm,
+        "classifier_dropout_prob": cfg.model.classifier_dropout_prob,
+        "loss_fn": cfg.model.loss_fn,
+    })
 
     run_start = datetime.utcnow().strftime("%Y-%d-%m_%H-%M-%S")
 
@@ -55,22 +62,31 @@ def main(cfg: DictConfig):
         train_ds = dm.get_train_dataset(fold)
         eval_ds = dm.get_eval_dataset(fold)
 
-        model = AutoModelForSequenceClassification(
+        model = BaseModel.from_pretrained(
             cfg.model.model_name_or_path, config=model_config
         )
 
         collator = DataCollatorWithPadding(
                 dm.tokenizer, pad_to_multiple_of=cfg.data.pad_multiple
             )
+        
+        if cfg.data.mask_augmentation:
+            trainer_class = partial(MaskAugmentationTrainer, cfg=cfg)
+        else:
+            trainer_class = Trainer
 
-        trainer = Trainer(
+        trainer = trainer_class(
             model=model,
+            args=t_args,
             train_dataset=train_ds,
             eval_dataset=eval_ds,
             tokenizer=dm.tokenizer,
             data_collator=collator,
             compute_metrics=partial(compute_metrics, label2id=dm.label2id),
+            callbacks=[NewWandbCB(cfg)],
         )
+        
+        trainer.remove_callback(WandbCallback)
 
         trainer.train()
 
