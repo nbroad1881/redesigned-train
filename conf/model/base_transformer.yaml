@@ -1,0 +1,13 @@
+hidden_dropout_prob: 0.0
+attention_probs_dropout_prob: 0.0
+classifier_dropout_prob: 0.0
+multisample_dropout: []
+    # - 0.5
+    # - 0.5
+    # - 0.5
+    # - 0.5
+    # - 0.5
+    # - 0.5
+    # - 0.5
+    # - 0.5
+output_layer_norm: no
