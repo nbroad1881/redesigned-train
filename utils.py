@@ -106,18 +106,28 @@ class NewWandbCB(WandbCallback):
                     log_freq=max(100, args.logging_steps),
                 )
 
-def compute_metrics(eval_pred, label2id):
-    preds, labels = eval_pred
+def compute_metrics(eval_pred, data_module, data_cfg):
+    
+    preds, labels = eval_pred  
+    
+    if data_cfg.problem_type == "single_label_classification":
+        preds = np.array([data_module.id2label[i] for i in preds.argmax(-1)])
+        labels = np.array([data_module.id2label[i] for i in labels])
 
     colwise_rmse = np.sqrt(np.mean((labels - preds) ** 2, axis=0))
     mean_rmse = np.mean(colwise_rmse)
 
     metrics = {}
+    
+    if data_cfg.problem_type == "multi_label_classification":
+        for id_, label in data_module.id2label.items():
+            metrics[f"{label}_rmse"] = colwise_rmse[id_]
 
-    for label, id_ in label2id.items():
-        metrics[f"{label}_rmse"] = colwise_rmse[id_]
-
-    metrics["mcrmse"] = mean_rmse
+        metrics["mcrmse"] = mean_rmse
+    
+    else:
+        metrics[f"{data_cfg.label_col}_rmse"] = colwise_rmse
+        
 
     return metrics
 
@@ -201,7 +211,7 @@ class MaskAugmentationTrainer(Trainer):
     
     
 class SaveCallback(TrainerCallback):
-    def __init__(self, min_score_to_save, metric_name, weights_only=True) -> None:
+    def __init__(self, threshold_score, metric_name, greater_is_better, weights_only=True) -> None:
         """
         After evaluation, if the `metric_name` value is higher than
         `min_score_to_save` the model will get saved.
@@ -210,8 +220,9 @@ class SaveCallback(TrainerCallback):
         """
         super().__init__()
 
-        self.min_score_to_save = min_score_to_save
+        self.threshold_score = threshold_score
         self.metric_name = metric_name
+        self.greater_is_better = greater_is_better
         self.weights_only = weights_only
 
     def on_evaluate(
@@ -232,10 +243,11 @@ class SaveCallback(TrainerCallback):
         metric_value = metrics.get(self.metric_name)
         if metric_value is None:
             raise KeyError(f"{self.metric_name} not found in metrics")
-
-        if metric_value > self.min_score_to_save:
+        
+        surpassed_threshold =  metric_value > self.threshold_score if self.greater_is_better else metric_value < self.threshold_score
+        if surpassed_threshold:
             logger.info(f"Saving model.")
-            self.min_score_to_save = metric_value
+            self.threshold_score = metric_value
             kwargs["model"].config.update({f"best_{self.metric_name}": metric_value})
 
             if self.weights_only:
