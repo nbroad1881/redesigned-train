@@ -113,6 +113,9 @@ def compute_metrics(eval_pred, data_module, data_cfg):
     if data_cfg.problem_type == "single_label_classification":
         preds = np.array([data_module.id2label[i] for i in preds.argmax(-1)])
         labels = np.array([data_module.id2label[i] for i in labels])
+        
+    # Can only have scores between 1 and 5
+    preds = np.clip(preds, a_min=1, a_max=5)
 
     colwise_rmse = np.sqrt(np.mean((labels - preds) ** 2, axis=0))
     mean_rmse = np.mean(colwise_rmse)
