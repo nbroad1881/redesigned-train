@@ -106,6 +106,7 @@ class LocalFileProcessor:
                 text_col=self.cfg.data.text_col,
                 text_pair_col=self.cfg.data.text_pair_col,
                 label_col=self.cfg.data.label_col,
+                label2id=self.label2id,
             ),
             batched=self.cfg.data.stride in {None, 0},
             batch_size=self.cfg.data.map_batch_size,
@@ -142,6 +143,7 @@ def tokenize(
     text_col="text",
     text_pair_col=None,
     label_col="label",
+    label2id=None,
 ):
     tokenizer_kwargs = {
         "padding": False,
@@ -184,7 +186,7 @@ def tokenize(
             labels[:, col] = examples[l]
     
     else:
-        labels = examples[label_col]
+        labels = [label2id[l] for l in examples[label_col]]
 
     tokenized["labels"] = labels
 
