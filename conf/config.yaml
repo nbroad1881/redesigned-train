@@ -9,7 +9,7 @@ defaults:
 
 
 model:
-  model_name_or_path:  "roberta-base"
+  model_name_or_path:  "xlnet-base-cased"
   short_model_max_chunks: 128
   hidden_act: gelu
   intermediate_size: 4096
@@ -17,7 +17,7 @@ model:
   num_attention_heads: 12
   num_hidden_layers: 36
   multisample_dropout: []
-  loss_fn: smoothl1 # smoothl1, l1, mse
+  loss_fn: mse # smoothl1, l1, mse, ce
 
   
 data:
@@ -30,7 +30,8 @@ data:
   data_files:
     train:
       - 'train_folds.csv'
-  mask_augmentation: yes
+  mask_augmentation: no
+  problem_type: "multi_label_classification"
   
 training_args:
   do_train: yes
@@ -39,7 +40,7 @@ training_args:
   evaluation_strategy: "epoch"
   fp16: yes
   
-  learning_rate: 2e-5
+  learning_rate: 9e-6
   per_device_train_batch_size: 4
   per_device_eval_batch_size: 32
   gradient_accumulation_steps: 1
@@ -48,17 +49,27 @@ training_args:
   greater_is_better: no
   report_to: "wandb"
   log_level: "warning"
-  save_strategy: "epoch"
+  save_strategy: "no"
   logging_steps: 30
   save_total_limit: 2
   group_by_length: yes
   warmup_ratio: 0.1
+  
+wandb:
+  tags:
+    - "pass_config_to_model"
+    - "clamp scores 1-5"
   
 # general configuration
 num_proc: 7
 task: text-classification
 language: en
 project_name: feedback-prize-3
+
+# if the eval score is better than this, save
+threshold_score: 0.5 
+# typically do all 5, but for quick experimentation, 2 or 3 are good enough[
+folds_to_run: 2
 
 hydra:
   output_subdir: config
