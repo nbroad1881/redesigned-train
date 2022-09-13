@@ -34,7 +34,19 @@ class BaseModel(PreTrainedModel):
         self.classifier = nn.Linear(config.hidden_size, config.num_labels)
         self._init_weights(self.classifier)
 
-
+    @staticmethod
+    def get_shapes(problem_type, num_labels):
+        """
+        (shapes for logits, shapes for labels)
+        """
+        
+        if problem_type == "single_label_classification":
+            return (-1, num_labels), (-1, )
+        if problem_type == "multi_label_classification":
+            return (-1, num_labels), (-1, num_labels)
+        
+        return (-1,), (-1,)
+    
     def forward(
         self,
         input_ids=None,
@@ -59,13 +71,15 @@ class BaseModel(PreTrainedModel):
             
             loss_fct = LOSS_FUNCTIONS[self.config.loss_fn]
 
+            
             if self.config.multisample_dropout:
                 loss, logits = self.multisample_dropout(outputs[:, 0, :], self.classifier, labels, loss_fct, self.ln)
                 
             else:
 
                 logits = self.classifier(self.ln(self.dropout(outputs[:, 0, :])))
-                loss = loss_fct(logits.view(-1, self.config.num_labels), labels)
+                logits_shape, labels_shape = self.get_shapes(self.config.problem_type, self.config.num_labels)
+                loss = loss_fct(logits.view(*logits_shape), labels.view(*labels_shape))
 
         else:
             logits = self.classifier(self.ln(outputs))
@@ -98,7 +112,7 @@ class BaseModel(PreTrainedModel):
 
         """
         If loading a local file, will first check if the state dict is to
-        just the short model or to the whole strideformer model. 
+        just the transformer model or to the whole model. 
         """
         if Path(model_name_or_path).is_dir():
             state_dict = torch.load(Path(model_name_or_path) / "pytorch_model.bin")
@@ -110,7 +124,7 @@ class BaseModel(PreTrainedModel):
 
             return model
 
-        model.backbone = AutoModel.from_pretrained(model_name_or_path)
+        model.backbone = AutoModel.from_pretrained(model_name_or_path, config=config)
         
         return model
 
@@ -119,6 +133,7 @@ LOSS_FUNCTIONS = {
     "smoothl1":  nn.SmoothL1Loss(),
     "l1": nn.L1Loss(),
     "mse": nn.MSELoss(),
+    "ce": nn.CrossEntropyLoss()
 }
 
 
