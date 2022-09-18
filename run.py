@@ -43,8 +43,11 @@ def main(cfg: DictConfig):
         dm.prepare_dataset()
 
     run_start = datetime.utcnow().strftime("%Y-%d-%m_%H-%M-%S")
+    cfg.run_start = run_start
 
     for fold in range(cfg.folds_to_run):
+        
+        cfg.fold = fold
 
         t_args.output_dir = f"{Path.cwd()/(run_start+'_f'+str(fold))}"
         
@@ -109,13 +112,15 @@ def main(cfg: DictConfig):
         
         trainer.remove_callback(WandbCallback)
         
+        if USING_WANDB:
+            wandb.init(config=OmegaConf.to_container(cfg))
 
         trainer.train()
 
         best_metric_score = getattr(
             trainer.model.config,
             f"best_{t_args.metric_for_best_model}", 
-            0
+            cfg.threshold_score,
         )
         trainer.log({f"best_{t_args.metric_for_best_model}": best_metric_score})
 
