@@ -14,6 +14,8 @@ from transformers.utils import ModelOutput
 
 
 class BaseModel(PreTrainedModel):
+    
+    supports_gradient_checkpointing = True
 
     def __init__(self, config):
         super().__init__(config)
@@ -127,6 +129,10 @@ class BaseModel(PreTrainedModel):
         model.backbone = AutoModel.from_pretrained(model_name_or_path, config=config)
         
         return model
+    
+    
+    def _set_gradient_checkpointing(self, module, value=False):
+        module.gradient_checkpointing = value
 
 
 LOSS_FUNCTIONS = {
