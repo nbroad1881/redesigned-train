@@ -70,6 +70,7 @@ jit_mode_eval: no
 # hub
 hub_model_id: null
 hub_token: null
+hub_private_repo: yes
 
 # reporting
 report_to: null
