@@ -18,7 +18,7 @@ from transformers.integrations import WandbCallback
 from transformers.utils.logging import get_logger
 
 from data import DataModule
-from utils import set_wandb_env_vars, compute_metrics, NewWandbCB, MaskAugmentationTrainer, SaveCallback
+from utils import set_wandb_env_vars, compute_metrics, NewWandbCB, MaskAugmentationTrainer, SaveCallback, push_to_hub
 from modeling.base import BaseModel
 
 logger = get_logger(__name__)
@@ -45,7 +45,7 @@ def main(cfg: DictConfig):
     run_start = datetime.utcnow().strftime("%Y-%d-%m_%H-%M-%S")
     cfg.run_start = run_start
 
-    for fold in range(cfg.folds_to_run):
+    for fold in range(1, cfg.folds_to_run):
         
         cfg.fold = fold
 
@@ -131,13 +131,14 @@ def main(cfg: DictConfig):
         model.config.update({"wandb_id": run_id, "wandb_name": run_name})
         model.config.save_pretrained(t_args.output_dir)
 
-        if t_args.push_to_hub:
-            push_to_hub(
-                trainer,
-                config=cfg,
-                metrics={f"best_{t_args.metric_for_best_model}": best_metric_score},
-                wandb_run_id=run_id,
-            )
+        # if t_args.push_to_hub:
+        #     print("pushing to hub")
+        #     push_to_hub(
+        #         trainer,
+        #         config=cfg,
+        #         metrics={f"best_{t_args.metric_for_best_model}": best_metric_score},
+        #         wandb_run_id=run_id,
+        #     )
 
         if USING_WANDB:
             wandb.finish()
