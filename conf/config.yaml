@@ -39,7 +39,7 @@ training_args:
   
   fp16: yes
   
-  learning_rate: 9e-6
+  learning_rate: 5e-6
   per_device_train_batch_size: 2
   per_device_eval_batch_size: 16
   gradient_accumulation_steps: 1
@@ -51,16 +51,18 @@ training_args:
   log_level: "warning"
   save_strategy: "no"
   evaluation_strategy: "steps"
-  eval_steps: 150
-  eval_delay: 200
+  eval_steps: 500
+  eval_delay: 700
   logging_steps: 30
-  save_total_limit: 1
+  save_total_limit: 2
   group_by_length: yes
   warmup_ratio: 0.1
   optim: adamw_bnb_8bit
+  push_to_hub: yes
+  hub_strategy: "end"
   
 wandb:
-  group: "deb-v3-l-exp1"
+  group: "deb-v3-l-exp2"
   tags:
     - "pass_config_to_model"
     - "clamp scores 1-5"
@@ -75,8 +77,8 @@ fold: -1
 
 # if the eval score is better than this, save
 threshold_score: 0.5 
-# typically do all 5, but for quick experimentation, 2 or 3 are good enough[
-folds_to_run: 3
+# typically do all 5, but for quick experimentation, 2 or 3 are good enough
+folds_to_run: 5
 
 hydra:
   output_subdir: config
