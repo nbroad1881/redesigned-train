@@ -18,7 +18,7 @@ from transformers.integrations import WandbCallback
 from transformers.trainer_callback import TrainerCallback, TrainerControl, TrainerState
 from transformers.utils import logging
 from transformers.file_utils import is_torch_tpu_available
-from huggingface_hub import ModelCard, CardData
+from huggingface_hub import ModelCard, CardData, whoami, create_repo
 
 logger = logging.get_logger(__name__)
 
@@ -112,14 +112,15 @@ class NewWandbCB(WandbCallback):
                     log_freq=max(100, args.logging_steps),
                 )
 
+
 def compute_metrics(eval_pred, data_module, data_cfg):
-    
-    preds, labels = eval_pred  
-    
+
+    preds, labels = eval_pred
+
     if data_cfg.problem_type == "single_label_classification":
         preds = np.array([data_module.id2label[i] for i in preds.argmax(-1)])
         labels = np.array([data_module.id2label[i] for i in labels])
-        
+
     # Can only have scores between 1 and 5
     preds = np.clip(preds, a_min=1, a_max=5)
 
@@ -127,16 +128,15 @@ def compute_metrics(eval_pred, data_module, data_cfg):
     mean_rmse = np.mean(colwise_rmse)
 
     metrics = {}
-    
+
     if data_cfg.problem_type == "multi_label_classification":
         for id_, label in data_module.id2label.items():
             metrics[f"{label}_rmse"] = colwise_rmse[id_]
 
         metrics["mcrmse"] = mean_rmse
-    
+
     else:
         metrics[f"{data_cfg.label_col}_rmse"] = colwise_rmse
-        
 
     return metrics
 
@@ -146,18 +146,22 @@ class PureMaskingDataCollator(DataCollatorForLanguageModeling):
 
     # Link to parent class
     # https://github.com/huggingface/transformers/blob/855dcae8bb743c3f8f0781742d7fa2fa3aaa3e22/src/transformers/data/data_collator.py#L607
-    
-    def torch_mask_tokens(self, inputs: Any, special_tokens_mask: Optional[Any] = None) -> Tuple[Any, Any]:
+
+    def torch_mask_tokens(
+        self, inputs: Any, special_tokens_mask: Optional[Any] = None
+    ) -> Tuple[Any, Any]:
         """
         Prepare masked tokens inputs/labels for masked language modeling: 80% MASK, 10% random, 10% original.
         """
-        
 
         # We sample a few tokens in each sequence for MLM training (with probability `self.mlm_probability`)
         probability_matrix = torch.full(inputs.shape, self.mlm_probability)
         if special_tokens_mask is None:
             special_tokens_mask = [
-                self.tokenizer.get_special_tokens_mask(val, already_has_special_tokens=True) for val in inputs.tolist()
+                self.tokenizer.get_special_tokens_mask(
+                    val, already_has_special_tokens=True
+                )
+                for val in inputs.tolist()
             ]
             special_tokens_mask = torch.tensor(special_tokens_mask, dtype=torch.bool)
         else:
@@ -166,35 +170,50 @@ class PureMaskingDataCollator(DataCollatorForLanguageModeling):
         probability_matrix.masked_fill_(special_tokens_mask, value=0.0)
         masked_indices = torch.bernoulli(probability_matrix).bool()
 
-        inputs[masked_indices] = self.tokenizer.convert_tokens_to_ids(self.tokenizer.mask_token)
+        inputs[masked_indices] = self.tokenizer.convert_tokens_to_ids(
+            self.tokenizer.mask_token
+        )
 
         return inputs
 
-    def torch_call(self, examples: List[Union[List[int], Any, Dict[str, Any]]]) -> Dict[str, Any]:
-        
+    def torch_call(
+        self, examples: List[Union[List[int], Any, Dict[str, Any]]]
+    ) -> Dict[str, Any]:
+
         # Handle dict or lists with proper padding and conversion to tensor.
         if isinstance(examples[0], Mapping):
-            batch = self.tokenizer.pad(examples, return_tensors="pt", pad_to_multiple_of=self.pad_to_multiple_of)
+            batch = self.tokenizer.pad(
+                examples,
+                return_tensors="pt",
+                pad_to_multiple_of=self.pad_to_multiple_of,
+            )
         else:
             batch = {
-                "input_ids": _torch_collate_batch(examples, self.tokenizer, pad_to_multiple_of=self.pad_to_multiple_of)
+                "input_ids": _torch_collate_batch(
+                    examples, self.tokenizer, pad_to_multiple_of=self.pad_to_multiple_of
+                )
             }
 
         # If special token mask has been preprocessed, pop it from the dict.
         special_tokens_mask = batch.pop("special_tokens_mask", None)
-        
+
         batch["input_ids"] = self.torch_mask_tokens(
             batch["input_ids"], special_tokens_mask=special_tokens_mask
         )
 
         label_name = "label" if "label" in examples[0].keys() else "labels"
-        labels = [feature[label_name] for feature in examples] if label_name in examples[0].keys() else None
+        labels = (
+            [feature[label_name] for feature in examples]
+            if label_name in examples[0].keys()
+            else None
+        )
 
         if "label" in batch:
             del batch["label"]
         batch["labels"] = torch.tensor(labels)
 
         return batch
+
 
 class MaskAugmentationTrainer(Trainer):
     """
@@ -206,21 +225,22 @@ class MaskAugmentationTrainer(Trainer):
         self.cfg = cfg
         super().__init__(*args, **kwargs)
 
-
     def get_train_dataloader(self, *args, **kwargs):
         dataloader = super().get_train_dataloader(*args, **kwargs)
 
         dataloader.collate_fn = PureMaskingDataCollator(
-            self.tokenizer, 
-            mlm_probability=self.cfg.data.masking_prob, 
+            self.tokenizer,
+            mlm_probability=self.cfg.data.masking_prob,
             pad_to_multiple_of=self.cfg.data.pad_multiple,
         )
 
         return dataloader
-    
-    
+
+
 class SaveCallback(TrainerCallback):
-    def __init__(self, threshold_score, metric_name, greater_is_better, weights_only=True) -> None:
+    def __init__(
+        self, threshold_score, metric_name, greater_is_better, weights_only=True
+    ) -> None:
         """
         After evaluation, if the `metric_name` value is higher than
         `min_score_to_save` the model will get saved.
@@ -252,8 +272,12 @@ class SaveCallback(TrainerCallback):
         metric_value = metrics.get(self.metric_name)
         if metric_value is None:
             raise KeyError(f"{self.metric_name} not found in metrics")
-        
-        surpassed_threshold =  metric_value > self.threshold_score if self.greater_is_better else metric_value < self.threshold_score
+
+        surpassed_threshold = (
+            metric_value > self.threshold_score
+            if self.greater_is_better
+            else metric_value < self.threshold_score
+        )
         if surpassed_threshold:
             logger.info(f"Saving model.")
             self.threshold_score = metric_value
@@ -261,7 +285,10 @@ class SaveCallback(TrainerCallback):
 
             if self.weights_only:
                 if "COCO" in str(kwargs["model"].config.__class__):
-                    torch.save(kwargs["model"].state_dict(), os.path.join(args.output_dir, "pytorch_model.bin"))
+                    torch.save(
+                        kwargs["model"].state_dict(),
+                        os.path.join(args.output_dir, "pytorch_model.bin"),
+                    )
                 else:
                     kwargs["model"].save_pretrained(args.output_dir)
                 kwargs["model"].config.save_pretrained(args.output_dir)
@@ -270,15 +297,14 @@ class SaveCallback(TrainerCallback):
                 control.should_save = True
         else:
             logger.info("Not saving model.")
-            
-            
-            
+
+
 def push_to_hub(
     trainer,
     commit_message: Optional[str] = "End of training",
     blocking: bool = True,
     config: OmegaConf = None,
-    metrics: dict = None,   
+    metrics: dict = None,
     wandb_run_id: str = None,
     **kwargs,
 ) -> str:
@@ -321,9 +347,9 @@ def push_to_hub(
     git_head_commit_url = trainer.repo.push_to_hub(
         commit_message=commit_message, blocking=blocking, auto_lfs_prune=True
     )
-        
+
     model_card = create_model_card(config, metrics, wandb_run_id)
-    model_card.save(Path(trainer.args.output_dir)/"README.md")
+    model_card.save(Path(trainer.args.output_dir) / "README.md")
 
     try:
         trainer.repo.push_to_hub(
@@ -339,27 +365,36 @@ def push_to_hub(
     return git_head_commit_url
 
 
-def create_model_card(config, metrics, wandb_run_id):
+def create_model_card(repo_name:str, config: OmegaConf, metrics: dict, wandb_run_id: str):
     """
-    config (Dict)
-    metrics (Dict)
-    wandb_run_id (str)
+    Create a model card and push it to the repo.
+    Args:
+        repo_name (str)
+        config (Dict)
+        metrics (Dict)
+        wandb_run_id (str)
     """
+
+    user = whoami()['name']
+    repo_id = f'{user}/{repo_name}'
+    url = create_repo(repo_id, exist_ok=True)
 
     template_path = Path(__file__).resolve().parent / "modelcard_template.md"
 
-    return ModelCard.from_template(
+    modelcard = ModelCard.from_template(
         card_data=CardData(  # Card metadata object that will be converted to YAML block
-            language='en',
-            license='mit',
+            language="en",
+            license="mit",
             tags=[config.project_name],
         ),
-        template_path=template_path, 
-        model_id=config.training_args.output_dir,  
+        template_path=template_path,
+        model_id=config.training_args.output_dir,
         metrics=json.dumps(metrics, indent=4),
         config=json.dumps(OmegaConf.to_container(config), indent=4),
         wandb_run_id=wandb_run_id,
     )
+
+    modelcard.push_to_hub(repo_id)
 
 
 class KLTrainer(Trainer):
@@ -378,8 +413,9 @@ class KLTrainer(Trainer):
 
         # Soften probabilities and compute distillation loss
         loss_fct = torch.nn.KLDivLoss(reduction="batchmean")
-        loss = self.args.temperature ** 2 * loss_fct(
+        loss = self.args.temperature**2 * loss_fct(
             F.log_softmax(logits / self.temperature, dim=-1),
-            F.softmax(pls / self.temperature, dim=-1))
+            F.softmax(pls / self.temperature, dim=-1),
+        )
 
         return (loss, outputs) if return_outputs else loss
