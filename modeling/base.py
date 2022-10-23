@@ -142,22 +142,3 @@ class ClassifierOutput(ModelOutput):
 
     loss: Optional[torch.FloatTensor] = None
     logits: torch.FloatTensor = None
-
-
-class MultiSampleDropout(nn.Module):
-    def __init__(self, dropout_probs) -> None:
-        super().__init__()
-
-        self.dropouts = [nn.Dropout(p=p) for p in dropout_probs]
-
-    def forward(self, hidden_states, linear, labels, loss_fn, layer_nm):
-        # if not using output layer_nm, pass nn.Identity()
-
-        logits = [linear(layer_nm(d(hidden_states))) for d in self.dropouts]
-
-        losses = [loss_fn(log.view(-1, labels.size(1)), labels) for log in logits]
-
-        logits = torch.mean(torch.stack(logits, dim=0), dim=0)
-        loss = torch.mean(torch.stack(losses, dim=0), dim=0)
-
-        return (loss, logits)

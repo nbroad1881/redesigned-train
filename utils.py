@@ -1,18 +1,22 @@
 import os
+import json
 from collections.abc import Mapping
 from typing import Any, Optional, Tuple, List, Dict, Union
 from dataclasses import dataclass
 from transformers import Trainer, DataCollatorForLanguageModeling
 from transformers.data.data_collator import _torch_collate_batch
+from pathlib import Path
 import torch
 
 import torch
+import torch.functional as F
 import numpy as np
 from transformers import TrainingArguments
 from transformers.integrations import WandbCallback
 from transformers.trainer_callback import TrainerCallback, TrainerControl, TrainerState
 from transformers.utils import logging
 from transformers.file_utils import is_torch_tpu_available
+from huggingface_hub import ModelCard, CardData
 
 logger = logging.get_logger(__name__)
 
@@ -264,3 +268,51 @@ class SaveCallback(TrainerCallback):
                 control.should_save = True
         else:
             logger.info("Not saving model.")
+
+
+
+def create_model_card(config, metrics, wandb_run_id):
+    """
+    config (Dict)
+    metrics (Dict)
+    wandb_run_id (str)
+    """
+
+    template_path = Path(__file__).resolve().parent / "modelcard_template.md"
+
+    return ModelCard.from_template(
+        card_data=CardData(  # Card metadata object that will be converted to YAML block
+            language='en',
+            license='mit',
+            tags=['feedback-prize-3']+config["tags"],
+            datasets=config["dataset_name"],
+        ),
+        template_path=template_path, 
+        model_id=f"{config['output']}-f{config['fold']}",  
+        dataset_name=config["dataset_name"], 
+        metrics=json.dumps(metrics, indent=4),
+        config=json.dumps(config, indent=4),
+        wandb_run_id=wandb_run_id,
+    )
+
+class KLTrainer(Trainer):
+    def __init__(self, temperature=2.0, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.temperature = temperature
+
+    def compute_loss(self, model, inputs, return_outputs=False):
+
+        pls = inputs.pop("pseudolabels")
+        if "labels" in inputs:
+            labels = inputs.pop("labels")
+
+        outputs = model(**inputs)
+        logits = outputs.logits
+
+        # Soften probabilities and compute distillation loss
+        loss_fct = torch.nn.KLDivLoss(reduction="batchmean")
+        loss = self.args.temperature ** 2 * loss_fct(
+            F.log_softmax(logits / self.temperature, dim=-1),
+            F.softmax(pls / self.temperature, dim=-1))
+
+        return (loss, outputs) if return_outputs else loss
