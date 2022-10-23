@@ -1,5 +1,6 @@
 import os
 import json
+from pathlib import Path
 from collections.abc import Mapping
 from typing import Any, Optional, Tuple, List, Dict, Union
 from dataclasses import dataclass
@@ -11,6 +12,7 @@ import torch
 import torch
 import torch.functional as F
 import numpy as np
+from omegaconf import DictConfig, OmegaConf
 from transformers import TrainingArguments
 from transformers.integrations import WandbCallback
 from transformers.trainer_callback import TrainerCallback, TrainerControl, TrainerState
@@ -268,7 +270,73 @@ class SaveCallback(TrainerCallback):
                 control.should_save = True
         else:
             logger.info("Not saving model.")
+            
+            
+            
+def push_to_hub(
+    trainer,
+    commit_message: Optional[str] = "End of training",
+    blocking: bool = True,
+    config: OmegaConf = None,
+    metrics: dict = None,   
+    wandb_run_id: str = None,
+    **kwargs,
+) -> str:
+    """
+    Upload *self.model* and *self.tokenizer* to the 🤗 model hub on the repo *self.args.hub_model_id*.
+    Parameters:
+        commit_message (`str`, *optional*, defaults to `"End of training"`):
+            Message to commit while pushing.
+        blocking (`bool`, *optional*, defaults to `True`):
+            Whether the function should return only when the `git push` has finished.
+        kwargs:
+            Additional keyword arguments passed along to [`~Trainer.create_model_card`].
+    Returns:
+        The url of the commit of your model in the given repository if `blocking=False`, a tuple with the url of
+        the commit and an object to track the progress of the commit if `blocking=True`
+    """
+    # If a user calls manually `push_to_hub` with `self.args.push_to_hub = False`, we try to create the repo but
+    # it might fail.
+    if not hasattr(trainer, "repo"):
+        trainer.init_git_repo()
 
+    # Only push from one node.
+    if not trainer.is_world_process_zero():
+        return
+
+    if trainer.args.hub_model_id is None:
+        model_name = Path(trainer.args.output_dir).name
+    else:
+        model_name = trainer.args.hub_model_id.split("/")[-1]
+
+    # Cancel any async push in progress if blocking=True. The commits will all be pushed together.
+    if (
+        blocking
+        and trainer.push_in_progress is not None
+        and not trainer.push_in_progress.is_done
+    ):
+        trainer.push_in_progress._process.kill()
+        trainer.push_in_progress = None
+
+    git_head_commit_url = trainer.repo.push_to_hub(
+        commit_message=commit_message, blocking=blocking, auto_lfs_prune=True
+    )
+        
+    model_card = create_model_card(config, metrics, wandb_run_id)
+    model_card.save(Path(trainer.args.output_dir)/"README.md")
+
+    try:
+        trainer.repo.push_to_hub(
+            commit_message="update model card README.md",
+            blocking=blocking,
+            auto_lfs_prune=True,
+        )
+    except EnvironmentError as exc:
+        print(
+            f"Error pushing update to the model card. Please read logs and retry.\n${exc}"
+        )
+
+    return git_head_commit_url
 
 
 def create_model_card(config, metrics, wandb_run_id):
@@ -284,16 +352,15 @@ def create_model_card(config, metrics, wandb_run_id):
         card_data=CardData(  # Card metadata object that will be converted to YAML block
             language='en',
             license='mit',
-            tags=['feedback-prize-3']+config["tags"],
-            datasets=config["dataset_name"],
+            tags=[config.project_name],
         ),
         template_path=template_path, 
-        model_id=f"{config['output']}-f{config['fold']}",  
-        dataset_name=config["dataset_name"], 
+        model_id=config.training_args.output_dir,  
         metrics=json.dumps(metrics, indent=4),
-        config=json.dumps(config, indent=4),
+        config=json.dumps(OmegaConf.to_container(config), indent=4),
         wandb_run_id=wandb_run_id,
     )
+
 
 class KLTrainer(Trainer):
     def __init__(self, temperature=2.0, *args, **kwargs):

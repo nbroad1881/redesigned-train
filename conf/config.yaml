@@ -9,7 +9,7 @@ defaults:
 
 
 model:
-  model_name_or_path:  "xlnet-base-cased"
+  model_name_or_path:  "microsoft/deberta-v3-large"
   short_model_max_chunks: 128
   hidden_act: gelu
   intermediate_size: 4096
@@ -21,7 +21,7 @@ model:
 
   
 data:
-  max_seq_length: 512
+  max_seq_length: 1024
   pad_multiple: 8
   stride: null
   n_rows: -1
@@ -37,25 +37,32 @@ training_args:
   do_train: yes
   do_eval: yes
   
-  evaluation_strategy: "epoch"
   fp16: yes
   
-  learning_rate: 9e-6
-  per_device_train_batch_size: 4
-  per_device_eval_batch_size: 32
+  learning_rate: 5e-6
+  per_device_train_batch_size: 2
+  per_device_eval_batch_size: 16
   gradient_accumulation_steps: 1
+  gradient_checkpointing: no
   
   metric_for_best_model: "eval_mcrmse"
   greater_is_better: no
   report_to: "wandb"
   log_level: "warning"
   save_strategy: "no"
+  evaluation_strategy: "steps"
+  eval_steps: 500
+  eval_delay: 700
   logging_steps: 30
   save_total_limit: 2
   group_by_length: yes
   warmup_ratio: 0.1
+  optim: adamw_bnb_8bit
+  push_to_hub: yes
+  hub_strategy: "end"
   
 wandb:
+  group: "deb-v3-l-exp2"
   tags:
     - "pass_config_to_model"
     - "clamp scores 1-5"
@@ -65,11 +72,13 @@ num_proc: 7
 task: text-classification
 language: en
 project_name: feedback-prize-3
+run_start: ""
+fold: -1
 
 # if the eval score is better than this, save
 threshold_score: 0.5 
-# typically do all 5, but for quick experimentation, 2 or 3 are good enough[
-folds_to_run: 2
+# typically do all 5, but for quick experimentation, 2 or 3 are good enough
+folds_to_run: 5
 
 hydra:
   output_subdir: config

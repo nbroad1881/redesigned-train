@@ -51,8 +51,11 @@ def main(cfg: DictConfig):
         dm.prepare_dataset()
 
     run_start = datetime.utcnow().strftime("%Y-%d-%m_%H-%M-%S")
+    cfg.run_start = run_start
 
-    for fold in range(cfg.folds_to_run):
+    for fold in range(1, cfg.folds_to_run):
+        
+        cfg.fold = fold
 
         t_args.output_dir = f"{Path.cwd()/(run_start+'_f'+str(fold))}"
 
@@ -132,6 +135,43 @@ def main(cfg: DictConfig):
                 predictions.predictions,
                 save_path
             )
+
+            print("Predictions saved to", str(save_path))
+            break
+
+        else:
+        if USING_WANDB:
+            wandb.init(config=OmegaConf.to_container(cfg))
+
+        if cfg.prediction_only:
+            predictions = trainer.predict(dm.get_test_dataset())
+
+            save_path = Path(cfg.training_args.output_dir) / "predictions.bin"
+            torch.save(
+                predictions.predictions,
+                save_path
+            )
+        best_metric_score = getattr(
+            trainer.model.config,
+            f"best_{t_args.metric_for_best_model}", 
+            cfg.threshold_score,
+        )
+        trainer.log({f"best_{t_args.metric_for_best_model}": best_metric_score})
+
+            run_id = wandb.run.id if USING_WANDB else ""
+            run_name = wandb.run.name if USING_WANDB else ""
+
+            model.config.update({"wandb_id": run_id, "wandb_name": run_name})
+            model.config.save_pretrained(t_args.output_dir)
+
+        # if t_args.push_to_hub:
+        #     print("pushing to hub")
+        #     push_to_hub(
+        #         trainer,
+        #         config=cfg,
+        #         metrics={f"best_{t_args.metric_for_best_model}": best_metric_score},
+        #         wandb_run_id=run_id,
+        #     )
 
             print("Predictions saved to", str(save_path))
             break
