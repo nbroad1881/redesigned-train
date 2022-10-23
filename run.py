@@ -11,7 +11,6 @@ from transformers import (
     TrainingArguments,
     set_seed,
     AutoConfig,
-    AutoModelForSequenceClassification,
     DataCollatorWithPadding,
 )
 from transformers.integrations import WandbCallback
@@ -25,6 +24,7 @@ from utils import (
     MaskAugmentationTrainer,
     SaveCallback,
     KLTrainer,
+    create_model_card,
 )
 from modeling.base import BaseModel
 
@@ -53,8 +53,8 @@ def main(cfg: DictConfig):
     run_start = datetime.utcnow().strftime("%Y-%d-%m_%H-%M-%S")
     cfg.run_start = run_start
 
-    for fold in range(1, cfg.folds_to_run):
-        
+    for fold in range(cfg.folds_to_run):
+
         cfg.fold = fold
 
         t_args.output_dir = f"{Path.cwd()/(run_start+'_f'+str(fold))}"
@@ -67,28 +67,32 @@ def main(cfg: DictConfig):
             id2label=dm.id2label,
             hidden_dropout_prob=cfg.model.hidden_dropout_prob,
             attention_probs_dropout_prob=cfg.model.attention_probs_dropout_prob,
-        )
-        model_config.update(
-            {
-                "multisample_dropout": OmegaConf.to_container(
-                    cfg.model.multisample_dropout
-                ),
-                "output_layer_norm": cfg.model.output_layer_norm,
-                "classifier_dropout_prob": cfg.model.classifier_dropout_prob,
-                "loss_fn": cfg.model.loss_fn,
-            }
+            multisample_dropout=OmegaConf.to_container(cfg.model.multisample_dropout),
+            output_layer_norm=cfg.model.output_layer_norm,
+            classifier_dropout_prob=cfg.model.classifier_dropout_prob,
+            loss_fn=cfg.model.loss_fn,
         )
 
         train_ds = dm.get_train_dataset(fold)
         eval_ds = dm.get_eval_dataset(fold)
 
-        model = BaseModel.from_pretrained(
-            cfg.model.model_name_or_path, config=model_config
-        )
+        if cfg.model.use_strideformer:
+            from strideformer import (
+                StrideformerConfig,
+                Strideformer,
+                StrideformerCollator,
+            )
 
-        collator = DataCollatorWithPadding(
-            dm.tokenizer, pad_to_multiple_of=cfg.data.pad_multiple
-        )
+            strideformer_cfg = StrideformerConfig()
+            model = Strideformer(strideformer_cfg, first_init=True)
+            collator = StrideformerCollator(dm.tokenizer)
+        else:
+            model = BaseModel.from_pretrained(
+                cfg.model.model_name_or_path, config=model_config
+            )
+            collator = DataCollatorWithPadding(
+                dm.tokenizer, pad_to_multiple_of=cfg.data.pad_multiple
+            )
 
         ### Set up callbacks ###
 
@@ -127,61 +131,29 @@ def main(cfg: DictConfig):
 
         trainer.remove_callback(WandbCallback)
 
+        # PREDICTIONS
         if cfg.prediction_only:
             predictions = trainer.predict(dm.get_test_dataset())
 
             save_path = Path(cfg.training_args.output_dir) / "predictions.bin"
-            torch.save(
-                predictions.predictions,
-                save_path
-            )
+            torch.save(predictions.predictions, save_path)
 
             print("Predictions saved to", str(save_path))
             break
 
+        # TR
         else:
-        if USING_WANDB:
-            wandb.init(config=OmegaConf.to_container(cfg))
 
-        if cfg.prediction_only:
-            predictions = trainer.predict(dm.get_test_dataset())
-
-            save_path = Path(cfg.training_args.output_dir) / "predictions.bin"
-            torch.save(
-                predictions.predictions,
-                save_path
+            create_model_card(
+                repo_name=t_args.output_dir, config=cfg, metrics={}, wandb_run_id=""
             )
-        best_metric_score = getattr(
-            trainer.model.config,
-            f"best_{t_args.metric_for_best_model}", 
-            cfg.threshold_score,
-        )
-        trainer.log({f"best_{t_args.metric_for_best_model}": best_metric_score})
-
-            run_id = wandb.run.id if USING_WANDB else ""
-            run_name = wandb.run.name if USING_WANDB else ""
-
-            model.config.update({"wandb_id": run_id, "wandb_name": run_name})
-            model.config.save_pretrained(t_args.output_dir)
-
-        # if t_args.push_to_hub:
-        #     print("pushing to hub")
-        #     push_to_hub(
-        #         trainer,
-        #         config=cfg,
-        #         metrics={f"best_{t_args.metric_for_best_model}": best_metric_score},
-        #         wandb_run_id=run_id,
-        #     )
-
-            print("Predictions saved to", str(save_path))
-            break
-
-        else:
 
             trainer.train()
 
             best_metric_score = getattr(
-                trainer.model.config, f"best_{t_args.metric_for_best_model}", 1
+                trainer.model.config,
+                f"best_{t_args.metric_for_best_model}",
+                cfg.threshold_score,
             )
             trainer.log({f"best_{t_args.metric_for_best_model}": best_metric_score})
 
@@ -191,13 +163,21 @@ def main(cfg: DictConfig):
             model.config.update({"wandb_id": run_id, "wandb_name": run_name})
             model.config.save_pretrained(t_args.output_dir)
 
-            if t_args.push_to_hub:
-                push_to_hub(
-                    trainer,
-                    config=cfg,
-                    metrics={f"best_{t_args.metric_for_best_model}": best_metric_score},
-                    wandb_run_id=run_id,
-                )
+            # Push newer version with more information
+            create_model_card(
+                repo_name=t_args.output_dir,
+                config=cfg,
+                metrics={f"best_{t_args.metric_for_best_model}": best_metric_score},
+                wandb_run_id=run_id,
+            )
+
+            # if t_args.push_to_hub:
+            #     push_to_hub(
+            #         trainer,
+            #         config=cfg,
+            #         metrics={f"best_{t_args.metric_for_best_model}": best_metric_score},
+            #         wandb_run_id=run_id,
+            #     )
 
             if USING_WANDB:
                 wandb.finish()
