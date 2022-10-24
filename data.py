@@ -170,24 +170,21 @@ def tokenize(
         **tokenizer_kwargs,
     )
 
-    
     # multi-label
     if not isinstance(label_col, str):
-        try:
-            dtype = np.float32 if isinstance(examples[label_col[0]][0], float) else np.int32
-        except TypeError:
-            raise TypeError("Be sure to set `batched=True` in map function")
-
-        labels = np.zeros(shape=(len(examples[text_col]), len(label_col)), dtype=dtype)
+        
+        num_rows = 1 if stride is not None else len(examples[text_col])
+        labels = np.zeros(shape=(num_rows, len(label_col)), dtype=np.float32)
 
         label_names = sorted(label_col)
 
         for col, l in enumerate(label_names):
             labels[:, col] = examples[l]
-    
+
     else:
         labels = [label2id[l] for l in examples[label_col]]
 
     tokenized["labels"] = labels
+    
 
     return tokenized
