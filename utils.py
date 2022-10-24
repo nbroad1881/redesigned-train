@@ -1,3 +1,5 @@
+from functools import partial
+import gc
 import os
 import json
 from pathlib import Path
@@ -13,12 +15,26 @@ import torch
 import torch.functional as F
 import numpy as np
 from omegaconf import DictConfig, OmegaConf
-from transformers import TrainingArguments
+from transformers import (
+    Trainer,
+    TrainingArguments,
+    set_seed,
+    AutoConfig,
+    DataCollatorWithPadding,
+)
 from transformers.integrations import WandbCallback
 from transformers.trainer_callback import TrainerCallback, TrainerControl, TrainerState
 from transformers.utils import logging
 from transformers.file_utils import is_torch_tpu_available
 from huggingface_hub import ModelCard, CardData, whoami, create_repo
+
+from modeling.strideformer import (
+    Strideformer,
+    StrideformerConfig,
+    StrideformerCollator,
+)
+from modeling.base import BaseModel
+from data import DataModule
 
 logger = logging.get_logger(__name__)
 
@@ -113,10 +129,9 @@ class NewWandbCB(WandbCallback):
                 )
 
 
-def compute_metrics(eval_pred, data_module, data_cfg, labels):
+def compute_metrics(eval_pred, data_module, data_cfg):
 
-    preds, _ = eval_pred
-    
+    preds, labels = eval_pred
 
     if data_cfg.problem_type == "single_label_classification":
         preds = np.array([data_module.id2label[i] for i in preds.argmax(-1)])
@@ -124,9 +139,8 @@ def compute_metrics(eval_pred, data_module, data_cfg, labels):
 
     # Can only have scores between 1 and 5
     preds = np.clip(preds, a_min=1, a_max=5)
-    
 
-    colwise_rmse = np.sqrt(np.mean((labels - preds) ** 2, axis=0))
+    colwise_rmse = np.sqrt(np.mean((labels.squeeze() - preds) ** 2, axis=0))
     mean_rmse = np.mean(colwise_rmse)
 
     metrics = {}
@@ -367,7 +381,9 @@ def push_to_hub(
     return git_head_commit_url
 
 
-def create_model_card(repo_name:str, config: OmegaConf, metrics: dict, wandb_run_id: str):
+def create_model_card(
+    repo_name: str, config: OmegaConf, metrics: dict, wandb_run_id: str
+):
     """
     Create a model card and push it to the repo.
     Args:
@@ -377,8 +393,8 @@ def create_model_card(repo_name:str, config: OmegaConf, metrics: dict, wandb_run
         wandb_run_id (str)
     """
 
-    user = whoami()['name']
-    repo_id = f'{user}/{repo_name}'
+    user = whoami()["name"]
+    repo_id = f"{user}/{repo_name}"
     url = create_repo(repo_id, exist_ok=True)
 
     template_path = Path(__file__).resolve().parent / "modelcard_template.md"
@@ -423,3 +439,171 @@ class KLTrainer(Trainer):
         )
 
         return (loss, outputs) if return_outputs else loss
+
+
+def clean_model_name(model_name):
+    return model_name.split("/")[-1]
+
+
+def load_model_and_collator(cfg, dm):
+
+    if cfg.model.use_strideformer:
+        load_func = load_strideformer_and_collator
+
+    else:
+        load_func = load_base_model_and_collator
+
+    model, collator = load_func(cfg, dm)
+
+    return model, collator
+
+
+def load_base_model_and_collator(cfg, dm):
+    model_config = AutoConfig.from_pretrained(
+        cfg.model.model_name_or_path,
+        problem_type=cfg.data.problem_type,
+        num_labels=len(dm.label2id),
+        label2id=dm.label2id,
+        id2label=dm.id2label,
+        hidden_dropout_prob=cfg.model.hidden_dropout_prob,
+        attention_probs_dropout_prob=cfg.model.attention_probs_dropout_prob,
+        multisample_dropout=OmegaConf.to_container(cfg.model.multisample_dropout),
+        output_layer_norm=cfg.model.output_layer_norm,
+        classifier_dropout_prob=cfg.model.classifier_dropout_prob,
+        loss_fn=cfg.model.loss_fn,
+    )
+
+    model = BaseModel.from_pretrained(cfg.model.model_name_or_path, config=model_config)
+    collator = DataCollatorWithPadding(
+        dm.tokenizer, pad_to_multiple_of=cfg.data.pad_multiple
+    )
+
+    return model, collator
+
+
+def load_strideformer_and_collator(cfg, dm):
+
+    strideformer_cfg = StrideformerConfig(
+        problem_type=cfg.data.problem_type,
+        num_labels=len(dm.label2id),
+        label2id=dm.label2id,
+        id2label=dm.id2label,
+        loss_fn=cfg.model.loss_fn,
+    )
+    model = Strideformer(strideformer_cfg, first_init=True)
+    collator = StrideformerCollator(dm.tokenizer)
+
+    return model, collator
+
+
+def prepare_trackers(cfg):
+
+    global USING_WANDB
+    USING_WANDB = "wandb" in cfg.training_args.report_to
+
+    if USING_WANDB:
+        import wandb
+
+        set_wandb_env_vars(cfg)
+
+
+def load_trainer(cfg: OmegaConf, dm: DataModule):
+    """
+    Creates the appropriate Trainer given the configuration
+    and data module objects.
+    """
+
+    model_name = clean_model_name(cfg.model.model_name_or_path)
+    repo_name = f"{cfg.run_start}_{model_name}_f{cfg.fold}"
+    dm.t_args.output_dir = f"{Path.cwd()/repo_name}"
+
+    model, collator = load_model_and_collator(cfg, dm)
+
+    if cfg.data.mask_augmentation:
+        trainer_class = partial(MaskAugmentationTrainer, cfg=cfg)
+    elif cfg.model.loss_fn == "kl":
+        trainer_class = partial(KLTrainer, temperature=cfg.model.temperature)
+    else:
+        trainer_class = Trainer
+
+    callbacks = create_callbacks(cfg)
+
+    compute_metrics = load_compute_metrics(cfg, dm)
+
+    train_ds = dm.get_train_dataset(cfg.fold)
+    eval_ds = dm.get_eval_dataset(cfg.fold)
+
+    trainer = trainer_class(
+        model=model,
+        args=dm.t_args,
+        train_dataset=train_ds,
+        eval_dataset=eval_ds,
+        tokenizer=dm.tokenizer,
+        data_collator=collator,
+        compute_metrics=compute_metrics,
+        callbacks=callbacks,
+    )
+
+    # Remove old WandbCallback
+    trainer.remove_callback(WandbCallback)
+
+    return trainer
+
+
+def load_compute_metrics(cfg, dm):
+    metrics = partial(
+        compute_metrics, data_module=dm, data_cfg=cfg.data,
+    )
+
+    return metrics
+
+
+def create_callbacks(cfg):
+    callbacks = []
+    if USING_WANDB:
+        callbacks.append(NewWandbCB(cfg))
+
+    t_args = cfg.training_args
+
+    callbacks.append(
+        SaveCallback(
+            threshold_score=cfg.threshold_score,
+            metric_name=t_args.metric_for_best_model,
+            greater_is_better=t_args.greater_is_better,
+            weights_only=True,
+        )
+    )
+
+
+def save_results(trainer, cfg):
+    t_args = cfg.training_args
+
+    best_metric_score = getattr(
+        trainer.model.config,
+        f"best_{t_args.metric_for_best_model}",
+        cfg.threshold_score,
+    )
+    trainer.log({f"best_{t_args.metric_for_best_model}": best_metric_score})
+
+    run_id = wandb.run.id if USING_WANDB else ""
+    run_name = wandb.run.name if USING_WANDB else ""
+
+    trainer.model.config.update({"wandb_id": run_id, "wandb_name": run_name})
+    trainer.model.config.save_pretrained(t_args.output_dir)
+
+    # Push newer version with more information
+    create_model_card(
+        repo_name=t_args.output_dir,
+        config=cfg,
+        metrics={f"best_{t_args.metric_for_best_model}": best_metric_score},
+        wandb_run_id=run_id,
+    )
+
+
+def cleanup_run(trainer, model):
+    if USING_WANDB:
+        wandb.finish()
+
+    del trainer.model, trainer
+    gc.collect()
+    torch.cuda.empty_cache()
