@@ -57,7 +57,8 @@ def main(cfg: DictConfig):
 
         cfg.fold = fold
 
-        t_args.output_dir = f"{Path.cwd()/(run_start+'_f'+str(fold))}"
+        repo_name = run_start+'_f'+str(fold)
+        t_args.output_dir = f"{Path.cwd()/repo_name}"
 
         model_config = AutoConfig.from_pretrained(
             cfg.model.model_name_or_path,
@@ -79,11 +80,17 @@ def main(cfg: DictConfig):
         if cfg.model.use_strideformer:
             from strideformer import (
                 StrideformerConfig,
-                Strideformer,
                 StrideformerCollator,
             )
+            from modeling.strideformer import Strideformer
 
-            strideformer_cfg = StrideformerConfig()
+            strideformer_cfg = StrideformerConfig(
+                problem_type=cfg.data.problem_type, 
+                loss_fn=cfg.model.loss_fn,
+                 num_labels=len(dm.label2id),
+                label2id=dm.label2id,
+                id2label=dm.id2label,
+            )
             model = Strideformer(strideformer_cfg, first_init=True)
             collator = StrideformerCollator(dm.tokenizer)
         else:
@@ -111,12 +118,12 @@ def main(cfg: DictConfig):
 
         if cfg.data.mask_augmentation:
             trainer_class = partial(MaskAugmentationTrainer, cfg=cfg)
-        elif cfg.model.loss_fn:
+        elif cfg.model.loss_fn == "kl":
             trainer_class = partial(KLTrainer, temperature=cfg.model.temperature)
         else:
             trainer_class = Trainer
 
-        metrics = partial(compute_metrics, data_module=dm, data_cfg=cfg.data)
+        metrics = partial(compute_metrics, data_module=dm, data_cfg=cfg.data, labels=eval_ds["labels"])
 
         trainer = trainer_class(
             model=model,
@@ -144,9 +151,9 @@ def main(cfg: DictConfig):
         # TR
         else:
 
-            create_model_card(
-                repo_name=t_args.output_dir, config=cfg, metrics={}, wandb_run_id=""
-            )
+            # create_model_card(
+            #     repo_name=repo_name, config=cfg, metrics={}, wandb_run_id=""
+            # )
 
             trainer.train()
 
