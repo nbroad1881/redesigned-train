@@ -1,20 +1,19 @@
 from pathlib import Path
 from itertools import chain
 from functools import partial
-from typing import Dict
 from dataclasses import dataclass
 
 import datasets
 from datasets import load_dataset, Dataset
-from transformers import AutoTokenizer
-from omegaconf import OmegaConf
+from transformers import AutoTokenizer, TrainingArguments
+from omegaconf import OmegaConf, DictConfig
 import numpy as np
 
 
 @dataclass
 class DataModule:
 
-    cfg: Dict = None
+    cfg: DictConfig = None
 
     def __post_init__(self):
         if self.cfg is None:
@@ -23,6 +22,12 @@ class DataModule:
         self.tokenizer = AutoTokenizer.from_pretrained(
             self.cfg.model.model_name_or_path,
         )
+
+        self.t_args = TrainingArguments(**(dict(self.cfg.training_args)))
+
+        with self.t_args.main_process_first():
+            self.prepare_dataset()
+
 
     def prepare_dataset(self) -> None:
         """
@@ -149,8 +154,8 @@ def tokenize(
         "padding": False,
     }
 
-    # If stride is not None, using sbert approach
-    if stride is not None and stride > 0:
+    # If stride is not None, using strideformer approach
+    if stride is not None:
         tokenizer_kwargs.update(
             {
                 "padding": True,
