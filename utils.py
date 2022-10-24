@@ -113,9 +113,10 @@ class NewWandbCB(WandbCallback):
                 )
 
 
-def compute_metrics(eval_pred, data_module, data_cfg):
+def compute_metrics(eval_pred, data_module, data_cfg, labels):
 
-    preds, labels = eval_pred
+    preds, _ = eval_pred
+    
 
     if data_cfg.problem_type == "single_label_classification":
         preds = np.array([data_module.id2label[i] for i in preds.argmax(-1)])
@@ -123,6 +124,7 @@ def compute_metrics(eval_pred, data_module, data_cfg):
 
     # Can only have scores between 1 and 5
     preds = np.clip(preds, a_min=1, a_max=5)
+    
 
     colwise_rmse = np.sqrt(np.mean((labels - preds) ** 2, axis=0))
     mean_rmse = np.mean(colwise_rmse)
@@ -394,7 +396,9 @@ def create_model_card(repo_name:str, config: OmegaConf, metrics: dict, wandb_run
         wandb_run_id=wandb_run_id,
     )
 
-    modelcard.push_to_hub(repo_id)
+    modelcard.push_to_hub(
+        repo_id,
+    )
 
 
 class KLTrainer(Trainer):
