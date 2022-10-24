@@ -9,8 +9,6 @@ from torch import nn
 from transformers import PreTrainedModel, AutoModel, PretrainedConfig, AutoConfig
 from transformers.modeling_outputs import ModelOutput
 
-from strideformer import StrideformerConfig
-
 
 LOSS_FUNCTIONS = {
     "smoothl1":  nn.SmoothL1Loss(),
@@ -19,7 +17,98 @@ LOSS_FUNCTIONS = {
     "ce": nn.CrossEntropyLoss()
 }
 
+""" Strideformer model configuration """
+from typing import Optional, List
 
+from transformers import PretrainedConfig
+from transformers.utils import logging
+
+
+
+from itertools import chain
+from typing import List, Dict
+
+import torch
+from transformers import PreTrainedTokenizerFast
+class StrideformerConfig(PretrainedConfig):
+    r"""
+    This is the configuration class to store the configuration of a [`Strideformer`]. It is used to instantiate a BStrideformerART
+    model according to the specified arguments, defining the model architecture.
+    Configuration objects inherit from [`PretrainedConfig`] and can be used to control the model outputs. Read the
+    documentation from [`PretrainedConfig`] for more information.
+    Args:
+        first_model_name_or_path (`str`, *optional*, defaults to `"sentence-transformers/all-MiniLM-L6-v2"`):
+            The model name or path to the first model that is usually a pre-trained sentence transformer.
+        freeze_first_model (`bool`, *optional*, defaults to `True`):
+            If True, freeze the weights of the first model. Otherwise, train it as well.
+        max_chunks (`int`, *optional*, defaults to 64)
+            The maximum number of chunks the first model can take.
+        hidden_size (`int`, *optional*, defaults to 384):
+            The hidden size of the second model. It must match the first model's hidden size.
+        initializer_range (`float`, *optional*, defaults to 0.02):
+            The standard deviation when initializing weights using a normal distribution.
+        num_hidden_layers (`int`, *optional*, defaults to 24):
+            Number of layers for the second model.
+        num_attention_heads (`int`, *optional*, defaults to 12):
+            Number of attention heads for each attention layer in the second model.
+        intermediate_size (`int`, *optional*, defaults to 4096):
+            Dimensionality of the "intermediate" (often named feed-forward) layer in second model.
+        hidden_act (`str` or `function`, *optional*, defaults to `"gelu"`):
+            The non-linear activation function (function or string) in the encoder and pooler. If string, `"gelu"`,
+            `"relu"`, `"silu"` and `"gelu_new"` are supported.
+        dropout (`float`, *optional*, defaults to 0.1):
+            The dropout probability for all fully connected layers in the second model.
+        layer_norm_eps (`float`, *optional*, defaults to 1e-7):
+            The epsilon value in LayerNorm
+        num_labels (`int`, *optional*, defaults to 2):
+            The number of labels for the classifier.
+    Example:
+    ```python
+    >>> from strideformer import StrideformerConfig, Strideformer
+    >>> config = StrideformerConfig("sentence-transformers/all-MiniLM-L6-v2", max_chunks=128)
+    >>> model = Strideformer(config)
+    ```"""
+    model_type: str = "strideformer"
+    keys_to_ignore_at_inference: List = [
+        "first_model_hidden_states",
+        "second_model_hidden_states",
+    ]
+
+    def __init__(
+        self,
+        first_model_name_or_path: Optional[
+            str
+        ] = "sentence-transformers/all-MiniLM-L6-v2",
+        freeze_first_model: Optional[bool] = True,
+        max_chunks: Optional[int] = 64,
+        hidden_size: Optional[int] = 384,
+        initializer_range: Optional[float] = 0.02,
+        num_hidden_layers: Optional[int] = 24,
+        num_attention_heads: Optional[int] = 12,
+        intermediate_size: Optional[int] = 4096,
+        hidden_act: Optional[str] = "gelu",
+        dropout: Optional[float] = 0.1,
+        layer_norm_eps: Optional[float] = 1e-7,
+        num_labels: Optional[int] = 2,
+        **kwargs
+    ):
+        self.first_model_name_or_path = first_model_name_or_path
+        self.freeze_first_model = freeze_first_model
+        self.max_chunks = max_chunks
+        self.hidden_size = hidden_size
+        self.initializer_range = initializer_range
+        self.num_hidden_layers = num_hidden_layers
+        self.num_attention_heads = num_attention_heads
+        self.intermediate_size = intermediate_size
+        self.hidden_act = hidden_act
+        self.dropout = dropout
+        self.layer_norm_eps = layer_norm_eps
+        self.num_labels = num_labels
+
+        super().__init__(
+            num_labels=num_labels,
+            **kwargs,
+        )
 @dataclass
 class ClassifierOutput(ModelOutput):
 
@@ -300,3 +389,53 @@ class Strideformer(PreTrainedModel):
             elif isinstance(module, torch.nn.LayerNorm):
                 module.bias.data.zero_()
                 module.weight.data.fill_(1.0)
+
+
+class StrideformerCollator:
+    def __init__(self, tokenizer: PreTrainedTokenizerFast, max_chunks: int = 128, problem_type:str = "multi_label_classification"):
+        """
+        Loads a collator designed for Strideformer.
+        Args:
+            tokenizer (`PreTrainedTokenizerFast`):
+                The tokenizer that corresponds with the first model in Strideformer.
+            max_chunks (`int`, *optional*, defaults to 128):
+                The maximum number of chunks that can be passed to the first model.
+                This is to limit OOM errors.
+        """
+        self.tokenizer = tokenizer
+        self.max_chunks = max_chunks
+
+    def __call__(self, features: List[Dict]):
+        """
+        Put features in a format that the model can use.
+        Args:
+            features (`List[Dict]`):
+                The list will be as long as the batch size specified
+                passed to the DataLoader.ffffffffffffffffffffffffffff
+                Each element of features will have keys: input_ids, attention_mask, labels
+                input_ids will be of shape [num_chunks, sequence_length]
+                attention_mask will be of shape [num_chunks, sequence_length]
+                label will be a single value if this is single_label_classification or regression
+                It will be a list if multi_label_classification
+        Returns:
+            (dict): input_ids, attention_mask, labels to be passed to the model.
+        """
+
+        label_key = "label" if "label" in features[0] else "labels"
+
+        ids = list(chain(*[x["input_ids"] for x in features]))
+        mask = list(chain(*[x["attention_mask"] for x in features]))
+        labels = [x[label_key] for x in features]
+
+        longest_seq = max([len(x) for x in ids])
+
+        ids = [x + [self.tokenizer.pad_token_id] * (longest_seq - len(x)) for x in ids]
+        mask = [x + [0] * (longest_seq - len(x)) for x in mask]
+
+        return {
+            "input_ids": torch.tensor(ids, dtype=torch.long)[: self.max_chunks, :],
+            "attention_mask": torch.tensor(mask, dtype=torch.long)[
+                : self.max_chunks, :
+            ],
+            "labels": torch.tensor(labels, dtype=torch.float).squeeze(-1),
+        }
